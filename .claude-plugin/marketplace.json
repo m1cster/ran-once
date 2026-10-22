@@ -1,0 +1,6 @@
+{
+  "name": "m1cster",
+  "owner": { "name": "m1cster", "url": "https://github.com/m1cster" },
+  "description": "Claude Code mods by m1cster",
+  "plugins": [{ "name": "ran-once", "source": "./" }]
+}
