@@ -1,6 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import { blockKey, commandsRun, ranBlockKeys, splitShellFences } from '../hooks/fences'
+import { POLL_MS } from '../hooks/register'
 
 const reply = (command: string, lead = 'Run this:') => `${lead}\n\n\`\`\`bash\n${command}\n\`\`\``
 const run = (command: string) =>
@@ -115,4 +116,67 @@ test('a tool result quoting <bash-input> is no run', async ($, on) => {
   })
   expect((await ui.find({ type: 'Text' }))?.text).toBe('engine')
   await ui.unmount()
+})
+
+test('a run that session.append never brought to ran-once still grays its block', async ($, on) => {
+  // The engine's stored rows. A plugin above ran-once passes `session.append`
+  // on without calling the hooks beneath, so rows reach the history alone.
+  let rows: { role: 'user' | 'assistant'; text: string; uuid: string }[] = []
+  let session = ''
+  const store = (role: 'user' | 'assistant', text: string) =>
+    rows.push({ role, text, uuid: `${session}-row-${rows.length + 1}` })
+  on('session.messages', ($, e) => {
+    if (e.as === 'api') return { value: rows.map(r => ({ role: r.role, content: [{ type: 'text' as const, text: r.text }] })) }
+    const asRows = (list: typeof rows) => list.map(r => ({ ...r, toolUses: [] }))
+    if (e.after !== undefined) {
+      const at = rows.findIndex(r => r.uuid === e.after)
+      return { value: at === -1 ? { deny: `no row ${e.after}` } : asRows(rows.slice(at + 1)) }
+    }
+    return { value: asRows(e.last === undefined ? rows : rows.slice(-e.last)) }
+  })
+  const clock = mock.clock(on)
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>engine</Text>
+  })
+
+  for (const surface of ['desktop', 'terminal'] as const) {
+    // A conversation of its own per surface (as after /clear): the follower's
+    // old cursor names no row of it, so it starts over.
+    session = surface
+    rows = []
+    store('assistant', PUSH_1)
+    store('user', run('git push'))
+    store('assistant', PUSH_2)
+    await clock.advance(POLL_MS)
+
+    const first = await $.ui.mount({
+      plugin: 'ran-once',
+      surface,
+      component: 'AssistantMessage',
+      requestId: 'msg_1-t0',
+      props: { text: PUSH_1, isFirstOfReply: true },
+    })
+    const repeat = await $.ui.mount({
+      plugin: 'ran-once',
+      surface,
+      component: 'AssistantMessage',
+      requestId: 'msg_2-t0',
+      props: { text: PUSH_2, isFirstOfReply: true },
+    })
+    await clock.settle()
+    expect((await first.find({ type: 'Markdown', text: /git push/ }))?.props.dimColor).toBe(true)
+    expect((await repeat.find({ type: 'Text' }))?.text).toBe('engine')
+
+    // The repeat runs in the open session; no session.append reaches ran-once.
+    store('user', run('git push'))
+    await clock.advance(POLL_MS)
+    const done = await repeat.find({ type: 'Markdown', text: /git push/ })
+    expect(done?.props.dimColor).toBe(true)
+    expect(done?.props.text).toBe('```\ngit push\n```')
+    // The first block stays as it was: one run, one block.
+    expect((await first.findAll({ type: 'Markdown', text: /git push/ })).map(m => m.props.dimColor)).toEqual([true])
+    await first.unmount()
+    await repeat.unmount()
+  }
 })

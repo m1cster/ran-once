@@ -8,6 +8,10 @@ out and without its Run button. It stays selectable, so you can still copy it an
 by hand on purpose. If the same command shows up again in a later reply, that new block
 keeps its Run button until you run it.
 
+A block grays out within about a second of running, in the session it ran in. The mod
+watches the session's newest messages on a one-second timer of its own, so this works
+even when another plugin handles new messages before ran-once and does not pass them on.
+
 Needs Claude Code 2.1.304 or newer: the mod uses Claude Code's function-hooks API, which is
 early access and may change between releases. Check with `claude --version`.
 

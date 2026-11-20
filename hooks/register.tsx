@@ -24,18 +24,69 @@ const refresh = async ($: EngineInterface) => {
   )
 }
 
+/** How often the follower looks for rows stored since its last look. */
+export const POLL_MS = 1000
+
+// The follower: a timer of ran-once's own that reads only the rows stored
+// after `cursor` and refreshes when one records a run. It does not depend on
+// `session.append` reaching this plugin, which another plugin above it may
+// pass on without calling the hooks beneath. Module variables, so a reload
+// starts it over (the old copy's `every` stops at the reload).
+let follower: { cancel: () => void } | undefined
+let cursor: string | undefined
+let isPolling = false
+
+/** Seeds the cursor at the newest row and works the run blocks out afresh. */
+const seed = async ($: EngineInterface) => {
+  const newest = await $.session.messages({ last: 1 })
+  cursor = Array.isArray(newest) ? newest.at(-1)?.uuid : undefined
+  await refresh($)
+}
+
+const poll = async ($: EngineInterface) => {
+  if (isPolling) return
+  isPolling = true
+  try {
+    if (cursor === undefined) return await seed($)
+    const fresh = await $.session.messages({ after: cursor })
+    // The anchor is gone (a compaction, a rewind, /clear): start over.
+    if (!Array.isArray(fresh)) return await seed($)
+    if (fresh.length === 0) return
+    cursor = fresh.at(-1)?.uuid ?? cursor
+    if (fresh.some(m => m.role === 'user' && commandsRun(m.text).length > 0)) await refresh($)
+  } finally {
+    isPolling = false
+  }
+}
+
+/** Starts the follower once per load; later calls do nothing. */
+const follow = async ($: EngineInterface) => {
+  if (follower) return
+  follower = $.clock.every(POLL_MS, () => void poll($).catch(() => {}))
+  await seed($)
+}
+
 export const register: Register = on => {
-  // A resumed session or a reload: the history says which blocks ran.
+  // A resumed session or a reload: the history says which blocks ran. From
+  // here on the follower keeps up with runs.
   on('session.start', async ($, e, next) => {
     const result = await next(e)
-    await refresh($)
+    await follow($)
 
     return result
   })
 
-  // A Run-button click (the desktop app queues `<bash-input>…` as a prompt)
-  // and a `!command` typed at the prompt both land here as a user row. The
-  // row is stored first, so the history read back holds it.
+  on('session.end', async ($, e, next) => {
+    follower?.cancel()
+    follower = undefined
+
+    return next(e)
+  })
+
+  // The fast path. A Run-button click (the desktop app queues `<bash-input>…`
+  // as a prompt) and a `!command` typed at the prompt both land here as a user
+  // row, when the plugins above pass it on. The row is stored first, so the
+  // history read back holds it. The follower catches the rows this misses.
   on('session.append', async ($, e, next) => {
     const stored = await next(e)
     if (e.agentId === undefined && e.message.type === 'user' && !NOT_A_RUN.has(e.door)) {
@@ -48,6 +99,9 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     if (e.props.isSummary) return next(e)
+    // Where `session.start` never reached this plugin, the first drawing
+    // starts the follower; the run blocks arrive with its first refresh.
+    if (!follower) void follow($).catch(() => {})
     const ran = await read($, ranBlocks)
     if (ran.length === 0) return next(e)
 
