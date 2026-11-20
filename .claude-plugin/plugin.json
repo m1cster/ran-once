@@ -1,6 +1,6 @@
 {
   "name": "ran-once",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Grays out shell code blocks whose command already ran, and drops their Run button",
   "author": { "name": "m1cster", "url": "https://github.com/m1cster" },
   "homepage": "https://github.com/m1cster/ran-once",
